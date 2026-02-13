@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import re
 from collections import Counter
+import math
 
 # --- CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="Auditoría OAI-PMH", layout="wide")
@@ -26,7 +27,7 @@ def get_repo_info(url):
             "Nombre": getattr(identify, 'repositoryName', 'Desconocido'),
             "Base URL": getattr(identify, 'baseURL', 'Desconocido'),
             "Versión Protocolo": getattr(identify, 'protocolVersion', '2.0'),
-            "Admin Email": getattr(identify, 'adminEmail', 'No público'),
+            # "Admin Email": Eliminado por solicitud
             "Repository ID": getattr(identify, 'repositoryIdentifier', None) # Clave para seguridad
         }
     except Exception as e:
@@ -59,7 +60,6 @@ def harvest_dynamic(url, limit):
             }
             
             # --- CORRECCIÓN DE ERROR (NoneType) ---
-            # Extracción dinámica segura: Filtramos Nones y convertimos todo a string
             for key, values in record.metadata.items():
                 if values:
                     # Comprensión de lista para asegurar que solo unimos cadenas de texto válidas
@@ -160,16 +160,14 @@ if run_analysis:
         if repo_info:
             # 1. MOSTRAR INFO
             with st.expander("ℹ️ Información Técnica del Servidor", expanded=True):
-                c1, c2, c3 = st.columns(3)
+                c1, c2 = st.columns(2) # Reducido a 2 columnas
                 c1.write(f"**Nombre:** {repo_info['Nombre']}")
                 c2.write(f"**ID:** {repo_info.get('Repository ID')}")
-                c3.write(f"**Admin:** {repo_info['Admin Email']}")
+                # Eliminado Admin Email
 
             # 2. COSECHA
             st.divider()
-            
-            # Mensaje de ayuda para cancelación
-            st.info("💡 Si el proceso tarda demasiado, puedes detenerlo usando el botón 'Stop' (⏹) en la esquina superior derecha de la aplicación.")
+            # Eliminado mensaje de "Stop"
             
             st.write(f"Iniciando cosecha de **{limit}** registros...")
             
@@ -220,7 +218,7 @@ if run_analysis:
                     else:
                         st.warning("No se encontraron fechas.")
 
-                # TAB 2: TIPOS Y FORMATOS (Limpio de info:eu-repo)
+                # TAB 2: TIPOS Y FORMATOS
                 with tab2:
                     c_type, c_lang = st.columns(2)
                     
@@ -232,7 +230,7 @@ if run_analysis:
                                 fig_type = px.pie(type_data, names='Valor', values='Frecuencia', hole=0.4)
                                 st.plotly_chart(fig_type, use_container_width=True)
                             else:
-                                st.info("No se detectaron tipos legibles (solo códigos técnicos o vacíos).")
+                                st.info("No se detectaron tipos legibles.")
                         else:
                             st.info("Campo 'type' vacío.")
 
@@ -254,7 +252,7 @@ if run_analysis:
                             fig_fmt = px.bar(fmt_data, x='Frecuencia', y='Valor', orientation='h')
                             st.plotly_chart(fig_fmt, use_container_width=True)
 
-                # TAB 3: VOLUMEN (Histogramas)
+                # TAB 3: VOLUMEN
                 with tab3:
                     c_v1, c_v2 = st.columns(2)
                     with c_v1:
@@ -269,7 +267,7 @@ if run_analysis:
                                                     labels={'count_subjects': 'Materias'})
                         st.plotly_chart(fig_sub_hist, use_container_width=True)
 
-                # TAB 4: COMPLETITUD (SEMÁFORO)
+                # TAB 4: COMPLETITUD
                 with tab4:
                     cols_to_exclude = ['identifier', 'datestamp', 'count_creators', 'count_subjects', 'year_extracted']
                     meta_cols = [c for c in df.columns if c not in cols_to_exclude]
@@ -301,16 +299,43 @@ if run_analysis:
                     )
                     st.plotly_chart(fig_comp, use_container_width=True)
 
-                # --- 4. DATA ---
+                # --- 4. DATA CON PAGINACIÓN ---
                 st.subheader("Explorador de Datos")
-                st.dataframe(df.head(100))
                 
+                # Control de paginación
+                page_size = 100
+                total_items = len(df)
+                total_pages = math.ceil(total_items / page_size)
+                
+                col_pag1, col_pag2 = st.columns([1, 4])
+                
+                with col_pag1:
+                    page_number = st.number_input(
+                        "Página", 
+                        min_value=1, 
+                        max_value=max(1, total_pages), 
+                        value=1,
+                        step=1
+                    )
+                
+                with col_pag2:
+                    st.write("") # Espacio vertical
+                    st.write(f"Mostrando página **{page_number}** de **{total_pages}** ({total_items} registros totales)")
+
+                # Cálculo del slice
+                start_idx = (page_number - 1) * page_size
+                end_idx = start_idx + page_size
+                
+                # Mostrar solo el fragmento
+                st.dataframe(df.iloc[start_idx:end_idx])
+                
+                # Descarga COMPLETA (no paginada)
                 csv = df.to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    "Descargar CSV Completo",
-                    csv,
-                    "auditoria_oai_clean.csv",
-                    "text/csv"
+                    label=f"⬇️ Descargar Todo ({total_items} registros)",
+                    data=csv,
+                    file_name="auditoria_oai_full.csv",
+                    mime="text/csv"
                 )
 
         else:
