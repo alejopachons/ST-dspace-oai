@@ -13,7 +13,6 @@ st.title("📊 Auditoría de Calidad de Metadatos (OAI-PMH)")
 st.markdown("Herramienta de análisis técnico y consistencia de registros para Administradores de Repositorios.")
 
 # --- GESTIÓN DE ESTADO (SESSION STATE) ---
-# Esto evita que se borre la data al interactuar con filtros o paginación
 if 'repo_info' not in st.session_state:
     st.session_state.repo_info = None
 if 'harvested_df' not in st.session_state:
@@ -146,7 +145,7 @@ if st.session_state.repo_info:
     else:
         limit = st.sidebar.slider("Límite de registros", 100, 5000, 500)
 
-# Botón de Inicio: Ahora guarda en Session State
+# Botón de Inicio
 if st.sidebar.button("🚀 Iniciar Auditoría", type="primary"):
     if not oai_url:
         st.warning("Ingrese una URL válida.")
@@ -157,10 +156,10 @@ if st.sidebar.button("🚀 Iniciar Auditoría", type="primary"):
         if st.session_state.repo_info:
             df_raw = harvest_dynamic(oai_url, limit)
             if not df_raw.empty:
-                # --- PRE-PROCESAMIENTO INICIAL (Se hace una sola vez) ---
+                # --- PRE-PROCESAMIENTO INICIAL ---
                 df = df_raw.copy()
 
-                # 1. Extraer Año
+                # 1. Año
                 date_col = 'date' if 'date' in df.columns else None
                 if date_col:
                     def extract_year(d):
@@ -170,29 +169,33 @@ if st.sidebar.button("🚀 Iniciar Auditoría", type="primary"):
                 else:
                     df['year_extracted'] = "No Data"
 
-                # 2. Extraer Formato Limpio
+                # 2. Formato Limpio
                 if 'format' in df.columns:
                     df['clean_format'] = df['format'].apply(detect_clean_format)
                 else:
                     df['clean_format'] = "Sin Formato"
 
-                # 3. Limpiar Tipos
+                # 3. Tipo Principal
                 if 'type' in df.columns:
                     df['primary_type'] = df['type'].apply(lambda x: str(x).split(';')[0] if x else "Desconocido")
                 else:
                     df['primary_type'] = "Desconocido"
                 
-                # Guardamos en Session State
+                # 4. Idioma Principal (para filtro)
+                if 'language' in df.columns:
+                    df['primary_lang'] = df['language'].apply(lambda x: str(x).split(';')[0] if x else "Desconocido")
+                else:
+                    df['primary_lang'] = "Desconocido"
+
                 st.session_state.harvested_df = df
             else:
                 st.error("La cosecha no devolvió registros.")
 
-# --- LÓGICA PRINCIPAL (RENDERIZADO) ---
-# Se ejecuta siempre que haya datos en memoria, no solo cuando se pulsa el botón
+# --- RENDERIZADO DEL DASHBOARD ---
 if st.session_state.repo_info and st.session_state.harvested_df is not None:
     
     repo_info = st.session_state.repo_info
-    df_full = st.session_state.harvested_df # Data completa original
+    df_full = st.session_state.harvested_df
 
     # Info Header
     with st.expander("ℹ️ Información Técnica del Servidor", expanded=False):
@@ -200,49 +203,73 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
         c1.write(f"**Nombre:** {repo_info['Nombre']}")
         c2.write(f"**ID:** {repo_info.get('Repository ID')}")
 
-    # --- FILTROS DINÁMICOS (EN DASHBOARD) ---
+    # --- FILTROS COMPLETOS ---
     st.divider()
-    
-    # Contenedor de Filtros
     with st.container():
         st.subheader("🔍 Filtros de Visualización")
-        col_f1, col_f2 = st.columns(2)
         
-        # Filtro Años
+        # Fila 1 de Filtros
+        col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+        
         available_years = sorted(list(df_full['year_extracted'].unique()))
         with col_f1:
-            sel_years = st.multiselect("Filtrar por Año", available_years, default=available_years)
-        
-        # Filtro Tipos
+            sel_years = st.multiselect("Año", available_years, default=available_years)
+            
         available_types = sorted(list(df_full['primary_type'].unique()))
         with col_f2:
-            sel_types = st.multiselect("Filtrar por Tipo", available_types, default=available_types)
+            sel_types = st.multiselect("Tipo", available_types, default=available_types)
 
-    # --- APLICACIÓN DE FILTROS ---
-    # Trabajamos sobre una copia para no perder la data original
+        available_langs = sorted(list(df_full['primary_lang'].unique()))
+        with col_f3:
+            sel_langs = st.multiselect("Idioma", available_langs, default=available_langs)
+
+        available_formats = sorted(list(df_full['clean_format'].unique()))
+        with col_f4:
+            sel_formats = st.multiselect("Formato", available_formats, default=available_formats)
+            
+        # Fila 2 de Filtros (Booleanos)
+        st.markdown("**Filtros de Calidad:**")
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            filter_empty_title = st.checkbox("⚠️ Mostrar solo registros SIN Título")
+        with col_b2:
+            filter_empty_desc = st.checkbox("⚠️ Mostrar solo registros SIN Descripción")
+
+    # --- APLICACIÓN LÓGICA DE FILTROS ---
     df = df_full.copy()
 
-    # Lógica segura: Si la lista está vacía, asumimos "Todos" (para que no desaparezca todo)
+    # Filtros de listas
     if sel_years:
         df = df[df['year_extracted'].isin(sel_years)]
-    
     if sel_types:
-        # Filtro flexible para tipos
-        pattern = '|'.join([re.escape(t) for t in sel_types])
-        if pattern:
-            df = df[df['type'].astype(str).str.contains(pattern, na=False)]
+        pattern_type = '|'.join([re.escape(t) for t in sel_types])
+        if pattern_type:
+            df = df[df['type'].astype(str).str.contains(pattern_type, na=False)]
+    if sel_langs:
+        # Filtro aproximado en string completo de lenguajes
+        pattern_lang = '|'.join([re.escape(l) for l in sel_langs])
+        if pattern_lang:
+            df = df[df['language'].astype(str).str.contains(pattern_lang, na=False)]
+    if sel_formats:
+        df = df[df['clean_format'].isin(sel_formats)]
 
-    # Mensaje de estado de filtros
+    # Filtros booleanos
+    if filter_empty_title:
+        # Verifica nulos o cadenas vacías
+        df = df[df['title'].isnull() | (df['title'].astype(str).str.strip() == "")]
+    
+    if filter_empty_desc:
+        df = df[df['description'].isnull() | (df['description'].astype(str).str.strip() == "")]
+
+    # --- VISUALIZACIÓN ---
     if len(df) == 0:
-        st.warning("⚠️ Los filtros seleccionados no produjeron resultados. Intenta ampliar la selección.")
+        st.warning("⚠️ Los filtros seleccionados no produjeron resultados.")
     else:
         st.success(f"Visualizando {len(df)} registros filtrados de un total de {len(df_full)}.")
 
-        # --- DASHBOARD ---
-        
-        # 1. KPIs
+        # 1. KPIs (Reducidos a 3)
         st.subheader("Indicadores Clave de Rendimiento (KPIs)")
-        k1, k2, k3, k4 = st.columns(4)
+        k1, k2, k3 = st.columns(3)
         
         k1.metric("Total Muestra", len(df))
         
@@ -252,9 +279,6 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
         missing_desc = df['description'].isnull().sum() if 'description' in df.columns else len(df)
         k3.metric("Sin Descripción", missing_desc, delta_color="inverse")
         
-        unknown_fmt = df[df['clean_format'] == 'Otros/Desconocido'].shape[0]
-        k4.metric("Formatos Ambiguos", unknown_fmt, delta_color="inverse", help="No es PDF, XML, Imagen, etc.")
-
         st.divider()
 
         # TABS
@@ -273,19 +297,25 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
                 fig_date = px.bar(year_counts, x='Año', y='Cantidad', title="Ingresos por Año")
                 st.plotly_chart(fig_date, use_container_width=True)
             else:
-                st.info("No hay datos para graficar con los filtros actuales.")
+                st.info("No hay datos de fecha.")
 
-        # TAB 2: TIPOLOGÍAS
+        # TAB 2: TIPOLOGÍAS (BARRAS HORIZONTALES)
         with tab2:
             col_t1, col_t2, col_t3 = st.columns(3)
             
+            # Helper para gráficos de barras limpias
+            def plot_bar_h(data, x_col, y_col, color_seq):
+                fig = px.bar(data, x=x_col, y=y_col, orientation='h', text=x_col, color_discrete_sequence=[color_seq])
+                fig.update_layout(showlegend=False, xaxis_title=None, yaxis_title=None, height=350, margin=dict(l=0, r=0, t=30, b=0))
+                return fig
+
             with col_t1:
                 st.markdown("**Tipología Documental**")
                 if 'type' in df.columns and not df.empty:
                     type_data = split_and_count(df, 'type')
                     if not type_data.empty:
-                        fig_type = px.pie(type_data, names='Valor', values='Frecuencia', hole=0.5)
-                        fig_type.update_layout(showlegend=False, margin=dict(t=0, b=0, l=0, r=0))
+                        # Usamos barras en lugar de Pie
+                        fig_type = plot_bar_h(type_data.head(10), 'Frecuencia', 'Valor', '#636EFA')
                         st.plotly_chart(fig_type, use_container_width=True)
             
             with col_t2:
@@ -293,25 +323,22 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
                 if 'language' in df.columns and not df.empty:
                     lang_data = split_and_count(df, 'language')
                     if not lang_data.empty:
-                        fig_lang = px.pie(lang_data, names='Valor', values='Frecuencia', hole=0.5)
-                        fig_lang.update_layout(showlegend=False, margin=dict(t=0, b=0, l=0, r=0))
+                        fig_lang = plot_bar_h(lang_data.head(10), 'Frecuencia', 'Valor', '#EF553B')
                         st.plotly_chart(fig_lang, use_container_width=True)
 
             with col_t3:
                 st.markdown("**Formatos (Detectados)**")
                 if 'clean_format' in df.columns and not df.empty:
                     fmt_counts = df['clean_format'].value_counts().reset_index()
-                    fmt_counts.columns = ['Formato', 'Cantidad']
+                    fmt_counts.columns = ['Valor', 'Frecuencia'] # Ajuste nombre cols para la funcion
                     if not fmt_counts.empty:
-                        fig_fmt = px.pie(fmt_counts, names='Formato', values='Cantidad', hole=0.5)
-                        fig_fmt.update_layout(showlegend=False, margin=dict(t=0, b=0, l=0, r=0))
+                        fig_fmt = plot_bar_h(fmt_counts.head(10), 'Frecuencia', 'Valor', '#00CC96')
                         st.plotly_chart(fig_fmt, use_container_width=True)
 
         # TAB 3: COMPLETITUD
         with tab3:
             st.markdown("##### Nivel de Completitud de Metadatos (Semáforo)")
-            
-            cols_to_exclude = ['identifier', 'datestamp', 'count_creators', 'count_subjects', 'year_extracted', 'clean_format', 'primary_type']
+            cols_to_exclude = ['identifier', 'datestamp', 'count_creators', 'count_subjects', 'year_extracted', 'clean_format', 'primary_type', 'primary_lang']
             meta_cols = [c for c in df.columns if c not in cols_to_exclude]
             
             if not df.empty:
@@ -323,7 +350,7 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
                 
                 c_red, c_yellow, c_green = st.columns(3)
                 
-                def make_bar(series, color, title):
+                def make_bar_sem(series, color, title):
                     if series.empty: return None
                     fig = go.Figure(go.Bar(
                         x=series.values, y=series.index, orientation='h',
@@ -333,17 +360,17 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
                     return fig
 
                 with c_red:
-                    fig_r = make_bar(red_fields, '#FF4B4B', '🔴 Críticos (<80%)')
+                    fig_r = make_bar_sem(red_fields, '#FF4B4B', '🔴 Críticos (<80%)')
                     if fig_r: st.plotly_chart(fig_r, use_container_width=True)
                     else: st.success("Sin campos críticos.")
 
                 with c_yellow:
-                    fig_y = make_bar(yellow_fields, '#FFAA00', '🟡 Aceptables (80-99%)')
+                    fig_y = make_bar_sem(yellow_fields, '#FFAA00', '🟡 Aceptables (80-99%)')
                     if fig_y: st.plotly_chart(fig_y, use_container_width=True)
                     else: st.info("Sin campos en alerta.")
 
                 with c_green:
-                    fig_g = make_bar(green_fields, '#09AB3B', '🟢 Óptimos (100%)')
+                    fig_g = make_bar_sem(green_fields, '#09AB3B', '🟢 Óptimos (100%)')
                     if fig_g: st.plotly_chart(fig_g, use_container_width=True)
                     else: st.info("Ningún campo al 100%.")
 
@@ -362,16 +389,19 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
         st.divider()
         st.subheader("Explorador de Registros")
         
-        page_size = 50
+        # Paginación con selector de tamaño
+        c_page_size, c_pagination_info = st.columns([1, 4])
+        with c_page_size:
+            page_size = st.selectbox("Registros por página", [10, 50, 250, 500], index=1)
+        
         total_items = len(df)
         total_pages = math.ceil(total_items / page_size)
         
         if total_pages > 0:
-            col_pag1, col_pag2 = st.columns([1, 4])
-            with col_pag1:
-                page_number = st.number_input("Página", min_value=1, max_value=max(1, total_pages), value=1)
-            with col_pag2:
-                st.write(f"Mostrando {page_size} registros por página. Total: {total_items}.")
+            with c_pagination_info:
+                st.write("") # Spacer
+                page_number = st.number_input(f"Ir a Página (1 - {total_pages})", min_value=1, max_value=max(1, total_pages), value=1)
+                st.caption(f"Mostrando {page_size} de {total_items} registros.")
 
             start_idx = (page_number - 1) * page_size
             end_idx = start_idx + page_size
