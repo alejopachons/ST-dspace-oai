@@ -3,28 +3,46 @@ import pandas as pd
 from sickle import Sickle
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
 import re
+from collections import Counter
 
-# Configuración de la página
-st.set_page_config(page_title="DSpace Health Check", layout="wide")
+# --- CONFIGURACIÓN INICIAL ---
+st.set_page_config(page_title="Auditoría OAI-PMH", layout="wide")
+st.title("📊 Auditoría de Calidad de Metadatos (OAI-PMH)")
+st.markdown("Herramienta de análisis técnico y consistencia de registros en repositorios DSpace.")
 
-st.title("🏥 DSpace OAI Health Check")
-st.markdown("Analítica cuantitativa de la salud de tus metadatos vía OAI-PMH.")
+# --- SIDEBAR: PARÁMETROS ---
+st.sidebar.header("Conexión")
+# URL vacía por defecto como solicitaste
+oai_url = st.sidebar.text_input("URL del OAI Base (ej: .../oai/request)", value="")
+limit = st.sidebar.slider("Límite de registros a procesar", 100, 5000, 500)
+st.sidebar.caption("Nota: Un número mayor a 1000 puede tardar varios minutos dependiendo de la respuesta del servidor.")
 
-# --- SIDEBAR: Configuración ---
-st.sidebar.header("Configuración de Cosecha")
-oai_url = st.sidebar.text_input("URL del OAI (ej: https://repositorio.u.edu/oai/request)", value="https://dspace.mit.edu/oai/request")
-limit = st.sidebar.slider("Límite de registros a analizar (Cuidado con la carga)", 100, 5000, 500)
-st.sidebar.info("Nota: Para esta demo, limitamos la cosecha para no saturar el servidor.")
+# --- FUNCIONES ---
 
-# --- FUNCIÓN DE COSECHA (Con Cache) ---
 @st.cache_data
-def harvest_data(url, limit):
-    records_data = []
+def get_repo_info(url):
+    """Obtiene la identidad del repositorio mediante el verbo Identify"""
     try:
         sickle = Sickle(url)
-        # Iteramos sobre los registros
+        identify = sickle.Identify()
+        return {
+            "Nombre": getattr(identify, 'repositoryName', 'Desconocido'),
+            "Base URL": getattr(identify, 'baseURL', 'Desconocido'),
+            "Versión Protocolo": getattr(identify, 'protocolVersion', '2.0'),
+            "Admin Email": getattr(identify, 'adminEmail', 'No público'),
+            "Granularidad": getattr(identify, 'granularity', 'Desconocido'),
+            "Compresión": getattr(identify, 'compression', 'Ninguna')
+        }
+    except Exception as e:
+        return None
+
+@st.cache_data
+def harvest_dynamic(url, limit):
+    """Cosecha dinámica: Captura cualquier campo que venga en el XML"""
+    data = []
+    try:
+        sickle = Sickle(url)
         iterator = sickle.ListRecords(metadataPrefix='oai_dc', ignore_deleted=True)
         
         progress_bar = st.progress(0)
@@ -34,116 +52,160 @@ def harvest_data(url, limit):
             if i >= limit:
                 break
             
-            # Actualizar barra de progreso
-            progress = (i + 1) / limit
-            progress_bar.progress(progress)
-            status_text.text(f"Cosechando registro {i+1}...")
+            # Progreso
+            progress_bar.progress((i + 1) / limit)
+            status_text.text(f"Procesando registro {i+1}...")
 
-            # Extracción segura de datos
-            metadata = record.metadata
-            
-            # Lógica básica de extracción (Dublin Core simple)
+            # Estructura base
             row = {
-                'id': record.header.identifier,
+                'identifier': record.header.identifier,
                 'datestamp': record.header.datestamp,
-                'title': metadata.get('title', [None])[0],
-                'date_issued': metadata.get('date', [None])[0],
-                'creators': metadata.get('creator', []),
-                'subjects': metadata.get('subject', []),
-                'description': metadata.get('description', [None])[0],
-                'type': metadata.get('type', [None])[0],
-                'language': metadata.get('language', [None])[0],
-                'format': metadata.get('format', [None])[0]
             }
-            records_data.append(row)
+            
+            # --- EXTRACCIÓN DINÁMICA DE TODOS LOS CAMPOS ---
+            # Sickle devuelve los metadatos como un diccionario donde los valores son listas
+            # Ej: {'title': ['Titulo 1'], 'subject': ['Física', 'Química']}
+            for key, values in record.metadata.items():
+                # Unimos los valores múltiples con punto y coma para que quepan en una celda
+                if values:
+                    row[key] = "; ".join(values)
+            
+            # Agregamos conteos útiles para análisis posterior (sin guardarlos como texto)
+            row['count_creators'] = len(record.metadata.get('creator', []))
+            row['count_subjects'] = len(record.metadata.get('subject', []))
+            
+            data.append(row)
             
         progress_bar.empty()
         status_text.empty()
-        return pd.DataFrame(records_data)
+        return pd.DataFrame(data)
 
     except Exception as e:
-        st.error(f"Error al conectar con el OAI: {e}")
+        st.error(f"Error en la conexión o cosecha: {e}")
         return pd.DataFrame()
 
-# --- LÓGICA PRINCIPAL ---
-if st.sidebar.button("Iniciar Diagnóstico"):
-    with st.spinner('Conectando al repositorio...'):
-        df = harvest_data(oai_url, limit)
+# --- INTERFAZ PRINCIPAL ---
 
-    if not df.empty:
-        # --- PROCESAMIENTO ADICIONAL ---
-        # Limpiar fechas para obtener solo el año
-        def extract_year(date_str):
-            if not date_str: return "Sin Fecha"
-            match = re.search(r'\d{4}', str(date_str))
-            return match.group(0) if match else "Formato Inválido"
-
-        df['year'] = df['date_issued'].apply(extract_year)
-        df['creator_count'] = df['creators'].apply(lambda x: len(x) if isinstance(x, list) else 0)
-        df['subject_count'] = df['subjects'].apply(lambda x: len(x) if isinstance(x, list) else 0)
-
-        # --- KPI's DE SALUD ---
-        st.divider()
-        st.subheader("1. Signos Vitales (Resumen)")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Registros Analizados", len(df))
-        
-        # Salud de Títulos (Deben existir)
-        missing_titles = df['title'].isnull().sum()
-        col2.metric("Sin Título (Crítico)", missing_titles, delta_color="inverse")
-        
-        # Salud de Fechas
-        missing_dates = df[df['year'] == "Sin Fecha"].shape[0]
-        col3.metric("Sin Fecha", missing_dates, delta_color="inverse")
-
-        # Salud de Autores
-        avg_authors = round(df['creator_count'].mean(), 2)
-        col4.metric("Promedio Autores/Item", avg_authors)
-
-        # --- GRÁFICOS ---
-        
-        # 2. Análisis Temporal (Consistencia de ingresos)
-        st.subheader("2. Ritmo Cardíaco del Repositorio (Publicaciones por Año)")
-        if 'year' in df.columns:
-            year_counts = df['year'].value_counts().sort_index().reset_index()
-            year_counts.columns = ['Año', 'Cantidad']
-            fig_time = px.bar(year_counts, x='Año', y='Cantidad', title="Distribución Temporal")
-            st.plotly_chart(fig_time, use_container_width=True)
-
-        # 3. Densidad de Metadatos (Salud del Registro)
-        st.subheader("3. Nutrición del Registro (Campos llenos vs vacíos)")
-        
-        # Calculamos porcentaje de completitud de campos clave
-        fields_to_check = ['description', 'language', 'format', 'type']
-        completeness = {}
-        for field in fields_to_check:
-            present = df[field].notnull().sum()
-            completeness[field] = (present / len(df)) * 100
-        
-        fig_health = go.Figure(go.Bar(
-            x=list(completeness.values()),
-            y=list(completeness.keys()),
-            orientation='h',
-            marker=dict(color=list(completeness.values()), colorscale='Viridis')
-        ))
-        fig_health.update_layout(title="Porcentaje de registros con campos presentes", xaxis_title="% Completitud")
-        st.plotly_chart(fig_health, use_container_width=True)
-
-        # 4. Tabla de "Pacientes Enfermos"
-        st.subheader("4. Triage: Registros que requieren atención")
-        st.write("Registros con problemas potenciales (sin fecha, sin descripción o sin autores):")
-        
-        problematic_df = df[
-            (df['year'] == "Sin Fecha") | 
-            (df['description'].isnull()) | 
-            (df['creator_count'] == 0)
-        ]
-        
-        if not problematic_df.empty:
-            st.dataframe(problematic_df[['id', 'title', 'year', 'creator_count', 'description']].head(50))
-        else:
-            st.success("¡Increíble! En esta muestra no se detectaron registros con problemas graves básicos.")
-
+if st.sidebar.button("Ejecutar Análisis"):
+    if not oai_url:
+        st.warning("Por favor ingrese una URL válida.")
     else:
-        st.warning("No se pudieron cargar datos. Verifica la URL.")
+        # 1. INFORMACIÓN DEL REPOSITORIO
+        with st.spinner('Obteniendo información del servidor...'):
+            repo_info = get_repo_info(oai_url)
+        
+        if repo_info:
+            st.subheader("1. Información del Repositorio")
+            c1, c2, c3 = st.columns(3)
+            c1.info(f"**Nombre:** {repo_info['Nombre']}")
+            c2.info(f"**Admin:** {repo_info['Admin Email']}")
+            c3.info(f"**Versión OAI:** {repo_info['Versión Protocolo']}")
+            
+            with st.expander("Ver detalles técnicos del servidor"):
+                st.json(repo_info)
+
+            # 2. COSECHA DE REGISTROS
+            with st.spinner(f'Descargando y analizando {limit} registros...'):
+                df = harvest_dynamic(oai_url, limit)
+
+            if not df.empty:
+                # Procesamiento de Fechas para gráficos
+                # Buscamos 'date' o 'date.issued' (oai_dc suele usar 'date')
+                date_col = 'date' if 'date' in df.columns else None
+                
+                if date_col:
+                    def extract_year(d):
+                        match = re.search(r'\d{4}', str(d))
+                        return match.group(0) if match else "Sin Año"
+                    df['year_extracted'] = df[date_col].apply(extract_year)
+
+                # --- KPIs ---
+                st.divider()
+                st.subheader("2. Resumen de Métricas")
+                k1, k2, k3, k4 = st.columns(4)
+                
+                k1.metric("Total Registros", len(df))
+                
+                # Conteo de vacíos
+                missing_title = df['title'].isnull().sum() if 'title' in df.columns else len(df)
+                k2.metric("Registros sin Título", missing_title, delta_color="inverse")
+                
+                avg_sub = round(df['count_subjects'].mean(), 1)
+                k3.metric("Promedio Materias/Item", avg_sub)
+                
+                avg_auth = round(df['count_creators'].mean(), 1)
+                k4.metric("Promedio Autores/Item", avg_auth)
+
+                # --- VISUALIZACIONES ---
+                st.divider()
+                st.subheader("3. Análisis Visual")
+
+                tab1, tab2, tab3, tab4 = st.tabs(["Temporalidad", "Tipologías", "Materias", "Completitud"])
+
+                with tab1:
+                    if 'year_extracted' in df.columns:
+                        year_counts = df['year_extracted'].value_counts().sort_index().reset_index()
+                        year_counts.columns = ['Año', 'Cantidad']
+                        fig_date = px.bar(year_counts, x='Año', y='Cantidad', title="Distribución de Publicaciones por Año")
+                        st.plotly_chart(fig_date, use_container_width=True)
+                    else:
+                        st.warning("No se encontró campo de fecha estándar ('date') para graficar.")
+
+                with tab2:
+                    if 'type' in df.columns:
+                        type_counts = df['type'].value_counts().reset_index()
+                        type_counts.columns = ['Tipo', 'Cantidad']
+                        # Usamos Pie chart para tipos
+                        fig_type = px.pie(type_counts, names='Tipo', values='Cantidad', title="Distribución por Tipo de Documento", hole=0.4)
+                        st.plotly_chart(fig_type, use_container_width=True)
+                    else:
+                        st.info("El campo 'type' no está presente en los metadatos.")
+
+                with tab3:
+                    if 'subject' in df.columns:
+                        # Separar materias compuestas por ; para el conteo real
+                        all_subjects = []
+                        for sub_str in df['subject'].dropna():
+                            all_subjects.extend([s.strip() for s in sub_str.split(';')])
+                        
+                        if all_subjects:
+                            top_subjects = pd.DataFrame(Counter(all_subjects).most_common(20), columns=['Materia', 'Frecuencia'])
+                            fig_sub = px.bar(top_subjects, x='Frecuencia', y='Materia', orientation='h', title="Top 20 Materias (Keywords)", text='Frecuencia')
+                            fig_sub.update_layout(yaxis={'categoryorder':'total ascending'})
+                            st.plotly_chart(fig_sub, use_container_width=True)
+                        else:
+                            st.info("No se encontraron materias individuales.")
+                    else:
+                        st.info("El campo 'subject' no está presente.")
+
+                with tab4:
+                    # Análisis de densidad de campos (cuántos campos tiene cada registro)
+                    # Excluimos columnas técnicas calculadas
+                    cols_to_exclude = ['identifier', 'datestamp', 'count_creators', 'count_subjects', 'year_extracted']
+                    meta_cols = [c for c in df.columns if c not in cols_to_exclude]
+                    
+                    completeness = df[meta_cols].notnull().mean().mul(100).sort_values(ascending=True)
+                    
+                    fig_comp = px.bar(x=completeness.values, y=completeness.index, orientation='h', 
+                                      title="Porcentaje de Ocupación por Campo de Metadato",
+                                      labels={'x': '% Completitud', 'y': 'Campo Metadato'})
+                    st.plotly_chart(fig_comp, use_container_width=True)
+
+                # --- TABLA DE DATOS ---
+                st.divider()
+                st.subheader("4. Explorador de Registros")
+                st.markdown("Visualización de la data cruda cosechada (Top 100 por rendimiento). Descarga disponible.")
+                st.dataframe(df.head(100))
+                
+                # Botón de descarga CSV
+                csv = df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "Descargar Reporte Completo (CSV)",
+                    csv,
+                    "auditoria_oai.csv",
+                    "text/csv",
+                    key='download-csv'
+                )
+
+        else:
+            st.error("No se pudo identificar el repositorio. Verifica la URL.")
