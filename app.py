@@ -52,27 +52,16 @@ def detect_clean_format(format_list_str):
     return 'Otros/Desconocido'
 
 def extract_year_func(d):
-    """
-    Extrae un año válido (1900-2099) de una cadena sucia.
-    Evita capturar IDs numéricos o nombres de archivo.
-    """
+    """Extrae un año válido (1900-2099)"""
     if not d or pd.isna(d):
         return "[ SIN DATO ]"
     
     text = str(d)
-    # Regex Explicación:
-    # \b        -> Límite de palabra (evita capturar 2017 dentro de 412230132017)
-    # (?:19|20) -> El año debe empezar por 19 o 20
-    # \d{2}     -> Seguido de dos dígitos cualquiera
-    # \b        -> Límite de palabra final
+    # Busca 19xx o 20xx aislado
     pattern = r'\b(?:19|20)\d{2}\b'
-    
     matches = re.findall(pattern, text)
     
     if matches:
-        # Si encuentra varios (ej: 2023 timestamp y 2017 fecha), 
-        # tomamos el primero o el más antiguo según preferencia. 
-        # Normalmente el primero válido suele ser el mejor candidato en DSpace.
         return matches[0]
         
     return "[ SIN DATO ]"
@@ -92,6 +81,31 @@ def clean_split_type(type_str):
     if not valid_items:
         return None
     return valid_items[0]
+
+def extract_license_code(rights_str):
+    """
+    Extrae el código de la licencia desde la URL o Texto.
+    Ej: http://creativecommons.org/licenses/by-nc-nd/4.0/ -> by-nc-nd/4.0
+    """
+    if not rights_str or pd.isna(rights_str):
+        return "[ SIN DATO ]"
+    
+    text = str(rights_str).lower()
+    
+    # Busca el patrón '/licenses/' seguido de cualquier cosa hasta el siguiente espacio o fin
+    # Capturamos los siguientes dos segmentos (ej: by/4.0 o by-nc-sa/4.0)
+    match = re.search(r'licenses/([a-z0-9\-\.]+(?:/[0-9\.]+)?)(?:/|$)', text)
+    
+    if match:
+        return match.group(1) # Retorna ej: "by-nc-nd/4.0"
+    
+    # Si no encuentra patrón de URL CC, verifica si es texto común
+    if "open access" in text or "acceso abierto" in text:
+        return "Acceso Abierto (Texto)"
+    if "restricted" in text or "restringido" in text:
+        return "Restringido (Texto)"
+        
+    return "Otro / No Estándar"
 
 def split_and_count_clean(df, column, top_n=20):
     """Cuenta valores ignorando basura técnica"""
@@ -212,7 +226,7 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
 
     # --- PRE-PROCESAMIENTO ---
     
-    # 1. Año (Lógica corregida)
+    # 1. Año
     if 'year_extracted' not in df_full.columns:
         date_col = 'date' if 'date' in df_full.columns else None
         if date_col:
@@ -241,9 +255,13 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
         else:
             df_full['primary_lang'] = "[ SIN DATO ]"
 
-    # 5. Derechos
+    # 5. Derechos (Rights) Raw
     if 'rights' not in df_full.columns:
         df_full['rights'] = None
+
+    # 6. Licencia Limpia (Nueva Columna)
+    if 'clean_license' not in df_full.columns:
+        df_full['clean_license'] = df_full['rights'].apply(extract_license_code)
 
     # Info Header
     with st.expander("ℹ️ Información Técnica del Servidor", expanded=False):
@@ -254,47 +272,56 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
     # --- SECCIÓN DE FILTROS ---
     st.divider()
     st.subheader("🔍 Filtros de Visualización")
+    st.caption("Nota: Los filtros inician vacíos. **Vacío significa 'Mostrar Todo'**.")
     
     with st.container(border=True):
-        # FILA 1: DIMENSIONES
-        c_f1, c_f2, c_f3, c_f4 = st.columns(4)
+        # FILA 1
+        c_f1, c_f2, c_f3 = st.columns(3)
         
-        # Filtros estándar (sin checkbox "Todos")
         available_years = sorted(list(df_full['year_extracted'].unique()))
-        sel_years = c_f1.multiselect("Año de Publicación", available_years, default=available_years)
+        sel_years = c_f1.multiselect("Año de Publicación", available_years, default=[]) # Empty default
 
         available_types = sorted(list(df_full['primary_type'].unique()))
-        sel_types = c_f2.multiselect("Tipología", available_types, default=available_types)
+        sel_types = c_f2.multiselect("Tipología", available_types, default=[]) # Empty default
 
         available_langs = sorted(list(df_full['primary_lang'].unique()))
-        sel_langs = c_f3.multiselect("Idioma", available_langs, default=available_langs)
+        sel_langs = c_f3.multiselect("Idioma", available_langs, default=[]) # Empty default
 
-        available_formats = sorted(list(df_full['clean_format'].unique()))
-        sel_formats = c_f4.multiselect("Formato Detectado", available_formats, default=available_formats)
-
-        # FILA 2: BOOLEANOS
-        st.write("") 
-        st.markdown("**Control de Calidad:**")
+        # FILA 2
+        c_f4, c_f5, c_f6 = st.columns(3)
         
-        c_b1, c_b2, c_b3 = st.columns(3)
-        with c_b1:
-            filter_empty_desc = st.checkbox("⚠️ Mostrar solo registros SIN Descripción")
-        with c_b2:
-            filter_no_rights = st.checkbox("⚠️ Mostrar solo registros SIN Licencia (Rights)")
+        available_formats = sorted(list(df_full['clean_format'].unique()))
+        sel_formats = c_f4.multiselect("Formato Detectado", available_formats, default=[]) # Empty default
 
-    # --- APLICACIÓN LÓGICA ---
+        available_licenses = sorted(list(df_full['clean_license'].unique()))
+        sel_licenses = c_f5.multiselect("Licencia (CC)", available_licenses, default=[]) # Empty default
+        
+        # Filtros booleanos
+        c_f6.write("") # Spacer vertical para alinear
+        c_f6.write("") 
+        filter_empty_desc = c_f6.checkbox("⚠️ Solo registros SIN Descripción")
+        filter_no_rights = c_f6.checkbox("⚠️ Solo registros SIN campo Rights")
+
+    # --- APLICACIÓN LÓGICA (CONDICIONAL) ---
     df = df_full.copy()
 
-    # Si hay selección, filtramos. Si está vacío, asumimos "Todo" para no dejar la pantalla en blanco.
+    # LOGICA: Solo filtramos si la lista NO está vacía
     if sel_years:
         df = df[df['year_extracted'].isin(sel_years)]
+        
     if sel_types:
         df = df[df['primary_type'].isin(sel_types)]
+        
     if sel_langs:
         df = df[df['primary_lang'].isin(sel_langs)]
+        
     if sel_formats:
         df = df[df['clean_format'].isin(sel_formats)]
+        
+    if sel_licenses:
+        df = df[df['clean_license'].isin(sel_licenses)]
 
+    # Filtros Booleanos
     if filter_empty_desc:
         df = df[df['description'].isnull() | (df['description'].astype(str).str.strip() == "")]
     
@@ -311,17 +338,12 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
         st.subheader("Indicadores Clave de Rendimiento (KPIs)")
         k1, k2, k3, k4 = st.columns(4)
         
-        # KPI 1: TOTAL ABSOLUTO (Estático)
-        k1.metric("Total Cosechado (Base)", len(df_full), help="Cantidad total de registros descargados inicialmente.")
+        k1.metric("Total Cosechado (Base)", len(df_full))
+        k2.metric("Visualizando Ahora", len(df), delta_color="off")
         
-        # KPI 2: MUESTRA FILTRADA (Dinámico)
-        k2.metric("Visualizando Ahora", len(df), help="Cantidad de registros según los filtros aplicados.")
-        
-        # KPI 3: Rights
         missing_rights = df['rights'].isnull().sum()
-        k3.metric("Sin Licencia (Rights)", missing_rights, delta_color="inverse")
+        k3.metric("Sin Campo Rights", missing_rights, delta_color="inverse")
         
-        # KPI 4: Descripción
         missing_desc = df['description'].isnull().sum() if 'description' in df.columns else len(df)
         k4.metric("Sin Descripción", missing_desc, delta_color="inverse")
         
@@ -339,12 +361,15 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
         with tab1:
             if 'year_extracted' in df.columns and not df.empty:
                 df_time = df[df['year_extracted'] != "[ SIN DATO ]"]
-                year_counts = df_time['year_extracted'].value_counts().sort_index().reset_index()
-                year_counts.columns = ['Año', 'Cantidad']
-                fig_date = px.bar(year_counts, x='Año', y='Cantidad', title="Ingresos por Año")
-                st.plotly_chart(fig_date, use_container_width=True)
+                if not df_time.empty:
+                    year_counts = df_time['year_extracted'].value_counts().sort_index().reset_index()
+                    year_counts.columns = ['Año', 'Cantidad']
+                    fig_date = px.bar(year_counts, x='Año', y='Cantidad', title="Ingresos por Año")
+                    st.plotly_chart(fig_date, use_container_width=True)
+                else:
+                    st.info("No hay años válidos en la selección actual.")
             else:
-                st.info("No hay datos de fecha válidos.")
+                st.info("No hay datos de fecha.")
 
         # TAB 2: TIPOLOGÍAS
         with tab2:
@@ -356,7 +381,7 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
                 return fig
 
             with col_t1:
-                st.markdown("**Tipología Documental (Limpia)**")
+                st.markdown("**Tipología (Limpia)**")
                 if 'type' in df.columns and not df.empty:
                     type_data = split_and_count_clean(df, 'type')
                     if not type_data.empty:
@@ -364,15 +389,16 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
                         st.plotly_chart(fig_type, use_container_width=True)
             
             with col_t2:
-                st.markdown("**Idiomas (ISO)**")
-                if 'language' in df.columns and not df.empty:
-                    lang_data = split_and_count_clean(df, 'language')
-                    if not lang_data.empty:
-                        fig_lang = plot_bar_h(lang_data.head(10), 'Frecuencia', 'Valor', '#EF553B')
-                        st.plotly_chart(fig_lang, use_container_width=True)
+                st.markdown("**Licencias (CC Detectadas)**")
+                if 'clean_license' in df.columns and not df.empty:
+                    lic_counts = df['clean_license'].value_counts().reset_index()
+                    lic_counts.columns = ['Valor', 'Frecuencia']
+                    if not lic_counts.empty:
+                        fig_lic = plot_bar_h(lic_counts.head(10), 'Frecuencia', 'Valor', '#EF553B')
+                        st.plotly_chart(fig_lic, use_container_width=True)
 
             with col_t3:
-                st.markdown("**Formatos (Detectados)**")
+                st.markdown("**Formatos**")
                 if 'clean_format' in df.columns and not df.empty:
                     fmt_counts = df['clean_format'].value_counts().reset_index()
                     fmt_counts.columns = ['Valor', 'Frecuencia']
@@ -383,7 +409,7 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
         # TAB 3: COMPLETITUD
         with tab3:
             st.markdown("##### Nivel de Completitud de Metadatos (Semáforo)")
-            cols_to_exclude = ['identifier', 'datestamp', 'count_creators', 'count_subjects', 'year_extracted', 'clean_format', 'primary_type', 'primary_lang', 'rights']
+            cols_to_exclude = ['identifier', 'datestamp', 'count_creators', 'count_subjects', 'year_extracted', 'clean_format', 'primary_type', 'primary_lang', 'rights', 'clean_license']
             meta_cols = [c for c in df.columns if c not in cols_to_exclude]
             
             if not df.empty:
