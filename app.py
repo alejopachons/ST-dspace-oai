@@ -51,6 +51,10 @@ def detect_clean_format(format_list_str):
     
     return 'Otros/Desconocido'
 
+def extract_year_func(d):
+    match = re.search(r'\d{4}', str(d))
+    return match.group(0) if match else "Sin Año"
+
 @st.cache_data(show_spinner=False)
 def harvest_dynamic(url, limit):
     data = []
@@ -156,38 +160,7 @@ if st.sidebar.button("🚀 Iniciar Auditoría", type="primary"):
         if st.session_state.repo_info:
             df_raw = harvest_dynamic(oai_url, limit)
             if not df_raw.empty:
-                # --- PRE-PROCESAMIENTO INICIAL ---
-                df = df_raw.copy()
-
-                # 1. Año
-                date_col = 'date' if 'date' in df.columns else None
-                if date_col:
-                    def extract_year(d):
-                        match = re.search(r'\d{4}', str(d))
-                        return match.group(0) if match else "Sin Año"
-                    df['year_extracted'] = df[date_col].apply(extract_year)
-                else:
-                    df['year_extracted'] = "No Data"
-
-                # 2. Formato Limpio
-                if 'format' in df.columns:
-                    df['clean_format'] = df['format'].apply(detect_clean_format)
-                else:
-                    df['clean_format'] = "Sin Formato"
-
-                # 3. Tipo Principal
-                if 'type' in df.columns:
-                    df['primary_type'] = df['type'].apply(lambda x: str(x).split(';')[0] if x else "Desconocido")
-                else:
-                    df['primary_type'] = "Desconocido"
-                
-                # 4. Idioma Principal (para filtro)
-                if 'language' in df.columns:
-                    df['primary_lang'] = df['language'].apply(lambda x: str(x).split(';')[0] if x else "Desconocido")
-                else:
-                    df['primary_lang'] = "Desconocido"
-
-                st.session_state.harvested_df = df
+                st.session_state.harvested_df = df_raw
             else:
                 st.error("La cosecha no devolvió registros.")
 
@@ -196,6 +169,41 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
     
     repo_info = st.session_state.repo_info
     df_full = st.session_state.harvested_df
+
+    # --- FIX DE AUTOCORRECCIÓN DE COLUMNAS (Para evitar KeyError) ---
+    # Esto asegura que si la data viene de una sesión vieja, se actualice con las nuevas columnas
+    
+    # 1. Año
+    if 'year_extracted' not in df_full.columns:
+        date_col = 'date' if 'date' in df_full.columns else None
+        if date_col:
+            df_full['year_extracted'] = df_full[date_col].apply(extract_year_func)
+        else:
+            df_full['year_extracted'] = "No Data"
+
+    # 2. Formato Limpio
+    if 'clean_format' not in df_full.columns:
+        if 'format' in df_full.columns:
+            df_full['clean_format'] = df_full['format'].apply(detect_clean_format)
+        else:
+            df_full['clean_format'] = "Sin Formato"
+
+    # 3. Tipo Principal
+    if 'primary_type' not in df_full.columns:
+        if 'type' in df_full.columns:
+            df_full['primary_type'] = df_full['type'].apply(lambda x: str(x).split(';')[0] if x else "Desconocido")
+        else:
+            df_full['primary_type'] = "Desconocido"
+    
+    # 4. Idioma Principal
+    if 'primary_lang' not in df_full.columns:
+        if 'language' in df_full.columns:
+            df_full['primary_lang'] = df_full['language'].apply(lambda x: str(x).split(';')[0] if x else "Desconocido")
+        else:
+            df_full['primary_lang'] = "Desconocido"
+    
+    # Actualizamos el session state con la data corregida
+    st.session_state.harvested_df = df_full
 
     # Info Header
     with st.expander("ℹ️ Información Técnica del Servidor", expanded=False):
@@ -246,7 +254,6 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
         if pattern_type:
             df = df[df['type'].astype(str).str.contains(pattern_type, na=False)]
     if sel_langs:
-        # Filtro aproximado en string completo de lenguajes
         pattern_lang = '|'.join([re.escape(l) for l in sel_langs])
         if pattern_lang:
             df = df[df['language'].astype(str).str.contains(pattern_lang, na=False)]
@@ -255,7 +262,6 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
 
     # Filtros booleanos
     if filter_empty_title:
-        # Verifica nulos o cadenas vacías
         df = df[df['title'].isnull() | (df['title'].astype(str).str.strip() == "")]
     
     if filter_empty_desc:
@@ -267,7 +273,7 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
     else:
         st.success(f"Visualizando {len(df)} registros filtrados de un total de {len(df_full)}.")
 
-        # 1. KPIs (Reducidos a 3)
+        # 1. KPIs
         st.subheader("Indicadores Clave de Rendimiento (KPIs)")
         k1, k2, k3 = st.columns(3)
         
@@ -303,7 +309,6 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
         with tab2:
             col_t1, col_t2, col_t3 = st.columns(3)
             
-            # Helper para gráficos de barras limpias
             def plot_bar_h(data, x_col, y_col, color_seq):
                 fig = px.bar(data, x=x_col, y=y_col, orientation='h', text=x_col, color_discrete_sequence=[color_seq])
                 fig.update_layout(showlegend=False, xaxis_title=None, yaxis_title=None, height=350, margin=dict(l=0, r=0, t=30, b=0))
@@ -314,7 +319,6 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
                 if 'type' in df.columns and not df.empty:
                     type_data = split_and_count(df, 'type')
                     if not type_data.empty:
-                        # Usamos barras en lugar de Pie
                         fig_type = plot_bar_h(type_data.head(10), 'Frecuencia', 'Valor', '#636EFA')
                         st.plotly_chart(fig_type, use_container_width=True)
             
@@ -330,7 +334,7 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
                 st.markdown("**Formatos (Detectados)**")
                 if 'clean_format' in df.columns and not df.empty:
                     fmt_counts = df['clean_format'].value_counts().reset_index()
-                    fmt_counts.columns = ['Valor', 'Frecuencia'] # Ajuste nombre cols para la funcion
+                    fmt_counts.columns = ['Valor', 'Frecuencia']
                     if not fmt_counts.empty:
                         fig_fmt = plot_bar_h(fmt_counts.head(10), 'Frecuencia', 'Valor', '#00CC96')
                         st.plotly_chart(fig_fmt, use_container_width=True)
@@ -389,7 +393,6 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
         st.divider()
         st.subheader("Explorador de Registros")
         
-        # Paginación con selector de tamaño
         c_page_size, c_pagination_info = st.columns([1, 4])
         with c_page_size:
             page_size = st.selectbox("Registros por página", [10, 50, 250, 500], index=1)
@@ -399,7 +402,7 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
         
         if total_pages > 0:
             with c_pagination_info:
-                st.write("") # Spacer
+                st.write("")
                 page_number = st.number_input(f"Ir a Página (1 - {total_pages})", min_value=1, max_value=max(1, total_pages), value=1)
                 st.caption(f"Mostrando {page_size} de {total_items} registros.")
 
