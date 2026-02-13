@@ -34,7 +34,7 @@ def get_repo_info(url):
 
 @st.cache_data(show_spinner=False)
 def harvest_dynamic(url, limit):
-    """Cosecha dinámica con manejo de errores de tipos (Fix NoneType)"""
+    """Cosecha dinámica con manejo de errores de tipos (NoneType fix)"""
     data = []
     try:
         sickle = Sickle(url)
@@ -59,10 +59,10 @@ def harvest_dynamic(url, limit):
             }
             
             # --- CORRECCIÓN DE ERROR (NoneType) ---
-            # Filtramos valores nulos y convertimos a string antes de unir
+            # Extracción dinámica segura: Filtramos Nones y convertimos todo a string
             for key, values in record.metadata.items():
                 if values:
-                    # 'v' puede ser None en metadatos sucios, esto lo evita:
+                    # Comprensión de lista para asegurar que solo unimos cadenas de texto válidas
                     clean_values = [str(v) for v in values if v is not None]
                     if clean_values:
                         row[key] = "; ".join(clean_values)
@@ -142,16 +142,8 @@ if st.session_state.repo_info:
     else:
         limit = st.sidebar.slider("Límite de registros", 100, 5000, 500)
 
-# --- BOTONES DE ACCIÓN ---
-col_action1, col_action2 = st.sidebar.columns(2)
-
-with col_action1:
-    run_analysis = st.button("🚀 Iniciar", type="primary", use_container_width=True)
-
-with col_action2:
-    # Botón de cancelación: Al hacer click, Streamlit recarga el script, deteniendo el loop actual.
-    if st.button("🛑 Cancelar", type="secondary", use_container_width=True):
-        st.stop()
+# --- BOTÓN PRINCIPAL DE ANÁLISIS ---
+run_analysis = st.sidebar.button("🚀 Iniciar Auditoría", type="primary")
 
 # --- LÓGICA PRINCIPAL ---
 
@@ -159,32 +151,26 @@ if run_analysis:
     if not oai_url:
         st.warning("Ingrese una URL y verifique la conexión primero.")
     else:
-        # Recuperar info si no está en sesión (caso borde)
+        # Recuperar info si no está en sesión
         if not st.session_state.repo_info:
             st.session_state.repo_info = get_repo_info(oai_url)
 
         repo_info = st.session_state.repo_info
         
         if repo_info:
-            # 1. MOSTRAR INFO (CON EMAIL OFUSCADO)
+            # 1. MOSTRAR INFO
             with st.expander("ℹ️ Información Técnica del Servidor", expanded=True):
                 c1, c2, c3 = st.columns(3)
                 c1.write(f"**Nombre:** {repo_info['Nombre']}")
                 c2.write(f"**ID:** {repo_info.get('Repository ID')}")
-                
-                # Ofuscación del email
-                raw_email = str(repo_info.get('Admin Email', ''))
-                if '@' in raw_email:
-                    parts = raw_email.split('@')
-                    # Muestra las primeras 2 letras, oculta el resto antes del @
-                    masked_email = f"{parts[0][:2]}***@{parts[1]}"
-                else:
-                    masked_email = "No disponible / Oculto"
-                    
-                c3.write(f"**Admin:** {masked_email}")
+                c3.write(f"**Admin:** {repo_info['Admin Email']}")
 
             # 2. COSECHA
             st.divider()
+            
+            # Mensaje de ayuda para cancelación
+            st.info("💡 Si el proceso tarda demasiado, puedes detenerlo usando el botón 'Stop' (⏹) en la esquina superior derecha de la aplicación.")
+            
             st.write(f"Iniciando cosecha de **{limit}** registros...")
             
             # Llamada a la función corregida
@@ -246,7 +232,7 @@ if run_analysis:
                                 fig_type = px.pie(type_data, names='Valor', values='Frecuencia', hole=0.4)
                                 st.plotly_chart(fig_type, use_container_width=True)
                             else:
-                                st.info("No se detectaron tipos legibles.")
+                                st.info("No se detectaron tipos legibles (solo códigos técnicos o vacíos).")
                         else:
                             st.info("Campo 'type' vacío.")
 
