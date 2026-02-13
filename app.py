@@ -10,7 +10,7 @@ import math
 # --- CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="Auditoría OAI-PMH", layout="wide")
 st.title("📊 Auditoría de Calidad de Metadatos (OAI-PMH)")
-st.markdown("Herramienta de análisis técnico y consistencia de registros para Administradores de Repositorios.")
+st.markdown("Herramienta de análisis técnico y consistencia de registros.")
 
 # --- GESTIÓN DE ESTADO (SESSION STATE) ---
 if 'repo_info' not in st.session_state:
@@ -386,8 +386,8 @@ if st.session_state.repo_info and st.session_state.harvested_df is not None:
             if not df.empty:
                 comp = df[meta_cols].notnull().mean().mul(100)
                 red_fields = comp[comp < 80].sort_values()
-                yellow_fields = comp[(comp >= 80) & (comp < 100)].sort_values()
-                green_fields = comp[comp == 100].sort_values()
+                yellow_fields = comp[(comp >= 80) & (comp < 99)].sort_values()
+                green_fields = comp[comp >=  99].sort_values()
                 
                 c_red, c_yellow, c_green = st.columns(3)
                 
