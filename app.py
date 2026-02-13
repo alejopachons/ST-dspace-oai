@@ -34,7 +34,7 @@ def get_repo_info(url):
 
 @st.cache_data(show_spinner=False)
 def harvest_dynamic(url, limit):
-    """Cosecha dinámica con barra de progreso"""
+    """Cosecha dinámica con manejo de errores de tipos (Fix NoneType)"""
     data = []
     try:
         sickle = Sickle(url)
@@ -47,7 +47,7 @@ def harvest_dynamic(url, limit):
             if i >= limit:
                 break
             
-            # Actualizar barra cada 10 registros para no ralentizar la UI
+            # Actualizar barra cada 10 registros
             if i % 10 == 0:
                 progress = min((i + 1) / limit, 1.0)
                 progress_bar.progress(progress)
@@ -58,10 +58,14 @@ def harvest_dynamic(url, limit):
                 'datestamp': record.header.datestamp,
             }
             
-            # Extracción dinámica
+            # --- CORRECCIÓN DE ERROR (NoneType) ---
+            # Filtramos valores nulos y convertimos a string antes de unir
             for key, values in record.metadata.items():
                 if values:
-                    row[key] = "; ".join(values)
+                    # 'v' puede ser None en metadatos sucios, esto lo evita:
+                    clean_values = [str(v) for v in values if v is not None]
+                    if clean_values:
+                        row[key] = "; ".join(clean_values)
             
             # Conteos
             row['count_creators'] = len(record.metadata.get('creator', []))
@@ -138,8 +142,16 @@ if st.session_state.repo_info:
     else:
         limit = st.sidebar.slider("Límite de registros", 100, 5000, 500)
 
-# --- BOTÓN PRINCIPAL DE ANÁLISIS ---
-run_analysis = st.sidebar.button("🚀 Iniciar Auditoría", type="primary")
+# --- BOTONES DE ACCIÓN ---
+col_action1, col_action2 = st.sidebar.columns(2)
+
+with col_action1:
+    run_analysis = st.button("🚀 Iniciar", type="primary", use_container_width=True)
+
+with col_action2:
+    # Botón de cancelación: Al hacer click, Streamlit recarga el script, deteniendo el loop actual.
+    if st.button("🛑 Cancelar", type="secondary", use_container_width=True):
+        st.stop()
 
 # --- LÓGICA PRINCIPAL ---
 
@@ -154,16 +166,28 @@ if run_analysis:
         repo_info = st.session_state.repo_info
         
         if repo_info:
-            # 1. MOSTRAR INFO
+            # 1. MOSTRAR INFO (CON EMAIL OFUSCADO)
             with st.expander("ℹ️ Información Técnica del Servidor", expanded=True):
                 c1, c2, c3 = st.columns(3)
                 c1.write(f"**Nombre:** {repo_info['Nombre']}")
                 c2.write(f"**ID:** {repo_info.get('Repository ID')}")
-                c3.write(f"**Admin:** {repo_info['Admin Email']}")
+                
+                # Ofuscación del email
+                raw_email = str(repo_info.get('Admin Email', ''))
+                if '@' in raw_email:
+                    parts = raw_email.split('@')
+                    # Muestra las primeras 2 letras, oculta el resto antes del @
+                    masked_email = f"{parts[0][:2]}***@{parts[1]}"
+                else:
+                    masked_email = "No disponible / Oculto"
+                    
+                c3.write(f"**Admin:** {masked_email}")
 
             # 2. COSECHA
             st.divider()
             st.write(f"Iniciando cosecha de **{limit}** registros...")
+            
+            # Llamada a la función corregida
             df = harvest_dynamic(oai_url, limit)
 
             if not df.empty:
@@ -193,7 +217,6 @@ if run_analysis:
                 # --- 3. PESTAÑAS VISUALES ---
                 st.subheader("Análisis Gráfico")
                 
-                # NOTA: Se retiró la pestaña de "Materias" (Top Keywords) por solicitud del usuario
                 tab1, tab2, tab3, tab4 = st.tabs([
                     "Temporalidad", 
                     "Tipologías y Formatos", 
@@ -218,13 +241,12 @@ if run_analysis:
                     with c_type:
                         st.markdown("##### Tipología Documental")
                         if 'type' in df.columns:
-                            # split_and_count ahora filtra la basura 'info:eu-repo'
                             type_data = split_and_count(df, 'type')
                             if not type_data.empty:
                                 fig_type = px.pie(type_data, names='Valor', values='Frecuencia', hole=0.4)
                                 st.plotly_chart(fig_type, use_container_width=True)
                             else:
-                                st.info("No se detectaron tipos legibles (solo códigos técnicos o vacíos).")
+                                st.info("No se detectaron tipos legibles.")
                         else:
                             st.info("Campo 'type' vacío.")
 
